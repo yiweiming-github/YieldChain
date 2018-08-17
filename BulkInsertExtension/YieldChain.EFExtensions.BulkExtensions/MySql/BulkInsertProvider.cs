@@ -22,6 +22,7 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
             {
                 var provider = new BulkInsertProvider(context);
                 var sql = provider.GenerateInsertSql<T>(entities);
+                
                 provider.ExecuteSql(sql);
             }
         }
@@ -33,6 +34,16 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
                 var provider = new BulkInsertProvider(context);
                 var sql = provider.GenerateDeleteSql<T>(entities);
                 provider.ExecuteSql(sql);
+            }
+        }
+
+        public static void BulkUpdate<T>(this DbContext context, IEnumerable<T> entities)
+        {
+            if (entities != null && entities.Count() > 0)
+            {
+                var provider = new BulkInsertProvider(context);
+                var sql = provider.GenerateUpdateSql<T>(entities);
+                provider.ExecuteSqlWithTransaction(sql);
             }
         }
     }
@@ -65,8 +76,43 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
                 sqlCmd.CommandType = CommandType.Text;
                 sqlCmd.ExecuteNonQuery();
             }
+
+            connection.Dispose();
         }
 
+        /// <summary>
+        /// Execute Sql
+        /// </summary>
+        /// <param name="sql"></param>
+        public void ExecuteSqlWithTransaction(string sql)
+        {
+            var connection = (MySqlConnection)_context.Database.Connection;
+            if (connection.State == ConnectionState.Closed)
+            {
+                connection.Open();
+            }
+
+            using (var trans = connection.BeginTransaction())
+            {
+                try
+                {
+                    using (var sqlCmd = new MySqlCommand(sql, connection))
+                    {
+                        sqlCmd.CommandType = CommandType.Text;
+                        sqlCmd.ExecuteNonQuery();
+                    }
+                    trans.Commit();
+                }
+                catch(Exception ex)
+                {
+                    trans.Rollback();
+                }
+            }
+
+            connection.Dispose();
+        }
+
+        #region INSERT
         /// <summary>
         /// Generate INSERT SQL text
         /// </summary>
@@ -81,7 +127,7 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
             var stringBuilder = new StringBuilder();
             stringBuilder.Append(GenerateSchemaPartOfInsertSql(tableMapping, columns));
             stringBuilder.Append(GenerateValuePartOfInsertSql<T>(entities, columns));
-            return stringBuilder.ToString();            
+            return stringBuilder.ToString();
         }
 
         /// <summary>
@@ -153,14 +199,16 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
             }
             else if (obj is string || obj is DateTime)
             {
-                return string.Format($"\'{obj.ToString()}\'");
+                return $"\'{obj.ToString()}\'";
             }
             else
             {
                 return obj.ToString();
             }
         }
+        #endregion
 
+        #region DELETE
         /// <summary>
         /// Generate DELETE SQL text
         /// </summary>
@@ -200,9 +248,122 @@ namespace YieldChain.EFExtension.BulkExtensions.MySql
         private string GenerateConditionPartOfDeleteSql<T>(IEnumerable<T> entities)
         {
             var ids = string.Join(",", entities.Select(x => x.GetPropertyValue("id").ToString()));
-            return $"( {ids} );"; 
+            return $"( {ids} );";
+        }
+        #endregion
+
+        #region UPDATE
+        /// <summary>
+        /// Generate Update SQL
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="entities"></param>
+        /// <returns></returns>
+        public string GenerateUpdateSql<T>(IEnumerable<T> entities)
+        {
+            var tableMapping = DbMapper.GetDbMapping(_context)[typeof(T)];
+            var pkColumn = tableMapping.Columns.FirstOrDefault(x => x.ColumnName == "id");
+            if (pkColumn == null || !pkColumn.IsPk)
+            {
+                throw new Exception("Can only perform bulk update on a table with pk column named \"id\"");
+            }
+            var columns = tableMapping.Columns.Where(x => x.ColumnName != "id");
+            var stringBuilder = new StringBuilder();
+            foreach (var entity in entities)
+            {
+                stringBuilder.Append(GenerateUpdateSqlForSingleRecord(entity, tableMapping.TableName, columns));
+            }
+            return stringBuilder.ToString();
         }
 
+        /// <summary>
+        /// Generate UPDATE SQL for one single record
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="entity"></param>
+        /// <param name="columns"></param>
+        /// <returns></returns>
+        private string GenerateUpdateSqlForSingleRecord<T>(T entity, string tableName, IEnumerable<ColumnMapping> columns)
+        {
+            var stringBuilder = new StringBuilder();
+            stringBuilder.Append($"UPDATE {tableName} SET ");
+            var fields = new List<string>();
+            foreach (var column in columns)
+            {
+                fields.Add(GenerateFieldOfUpdateSql<T>(entity, column));
+            }
+            stringBuilder.Append(string.Join(",", fields));
+            stringBuilder.Append($" WHERE id = {entity.GetPropertyValue("id")}; ");
+            return stringBuilder.ToString();
+        }
+
+        /// <summary>
+        /// Generate UPDATE SQL for one data field
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="entity"></param>
+        /// <param name="column"></param>
+        /// <returns></returns>
+        private string GenerateFieldOfUpdateSql<T>(T entity, ColumnMapping column)
+        {
+            var obj = entity.GetPropertyValue(column.ColumnName);
+            if (obj == null)
+            {
+                return $"`{column.ColumnName}` = NULL";
+            }
+            else if (obj is string || obj is DateTime)
+            {
+                return $"`{column.ColumnName}` = \'{obj.ToString()}\'";
+            }
+            else
+            {
+                return $"`{column.ColumnName}` = {obj.ToString()}";
+            }
+        }
+        #endregion
+
         private DbContext _context;
+    }
+
+    public class BulkTransaction : IDisposable
+    {
+        public BulkTransaction(DbContext db)
+        {
+            _provider = new BulkInsertProvider(db);
+            _sql = "";
+        }
+
+        public void BulkInsert<T>(IEnumerable<T> entities)
+        {
+            _sql += _provider.GenerateInsertSql<T>(entities);
+        }
+
+        public void BulkDelete<T>(IEnumerable<T> entities)
+        {
+            _sql += _provider.GenerateDeleteSql<T>(entities);
+        }
+
+        public void BulkUpdate<T>(IEnumerable<T> entities)
+        {
+            _sql += _provider.GenerateUpdateSql(entities);
+        }
+
+        public void Commit()
+        {
+            if (!string.IsNullOrWhiteSpace(_sql))
+            {
+                _provider.ExecuteSqlWithTransaction(_sql);
+            }
+        }
+
+        public void Dispose()
+        {
+            _sql = null;
+            _provider = null;
+            GC.SuppressFinalize(this);
+        }
+
+        private string _sql;
+        private BulkInsertProvider _provider;
     }
 }

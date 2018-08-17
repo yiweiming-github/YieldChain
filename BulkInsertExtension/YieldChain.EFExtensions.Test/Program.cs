@@ -35,6 +35,17 @@ namespace BulkInsertTest
             //    db.BulkInsert(trades);
             //    Console.WriteLine("Done!");
             //}
+
+            //using (var db = new YLContext())
+            //{
+            //    using (var trans = new BulkTransaction(db))
+            //    {
+            //        var tradesToDelete = db.trade.Where(x => x.UnderlyingCode == "Dummy").ToList();
+            //        db.BulkDelete(tradesToDelete);
+            //        db.BulkInsert(trades);
+            //        trans.Commit();
+            //    }
+            //}
         }
     }
 }

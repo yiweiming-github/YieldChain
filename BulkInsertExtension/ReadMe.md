@@ -1,11 +1,13 @@
 # BulkInsertExtension
-在使用EntityFramework的项目中支持BulkInsert和BulkDelete。
+在使用EntityFramework的项目中支持BulkInsert，BulkDelete和BulkUpdate操作。
 
 ### 谁需要这个库？
 - 对EntityFramework中大批量插入、删除操作的效率不满意，但又不愿意使用付费插件(比如[entityframework-extensions](http://entityframework-extensions.net/))。可以尝试一下这个BulkInsertExtension。
 
 ### 如何使用？
-```
+
+#### 批量删除/插入
+```CSharp
     using YieldChain.EFExtension.BulkExtensions.MySql;
     
     static void Main(string[] args)
@@ -42,6 +44,21 @@
     }
 
 ```
+
+#### 使用BulkTransaction
+```CSharp
+    using (var db = new YLContext())
+    {
+        using (var trans = new BulkTransaction(db))
+        {
+            var tradesToDelete = db.trade.Where(x => x.UnderlyingCode == "Dummy").ToList();
+            db.BulkDelete(tradesToDelete);
+            db.BulkInsert(trades);
+            trans.Commit();
+        }
+    }
+```
+
 
 ### 为什么只支持MySql？
 - 因为我们在用MySql，而SqlServer和Oracle等都有相对成熟便利的解决方法，只有MySql在这方面的支持稍欠缺。
